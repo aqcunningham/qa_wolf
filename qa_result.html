@@ -4,28 +4,16 @@
 <meta charset="UTF-8">
 <title>QA Result</title>
 <style>
-	html, body {
-  height: 100%;
-  margin: 0;
-}
-body {
-  min-height: 100vh;
-  background: #0f172a;
-  color: #fff;
-  font-family: monospace;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  padding: 20px;
-}
+  html, body {
+    height: 100%;
+    margin: 0;
+  }
   body {
+    box-sizing: border-box;
+    min-height: 100vh;
     background: #0f172a;
     color: #fff;
     font-family: monospace;
-    height: 100vh;
-    margin: 0;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -33,6 +21,13 @@ body {
     text-align: center;
     padding: 20px;
   }
+  #status {
+    font-size: 2.5rem;
+    font-weight: bold;
+    margin-bottom: 16px;
+  }
+  body.pass #status { color: #22c55e; }
+  body.fail #status { color: #ef4444; }
   #result {
     font-size: 1.3rem;
     max-width: 700px;
@@ -53,13 +48,18 @@ body {
 </style>
 </head>
 <body>
+  <div id="status"></div>
   <div id="result">Loading result...</div>
   <a href="https://www.asellecunningham.com/">Visit My Portfolio Website</a>
 
   <script>
     const params = new URLSearchParams(window.location.search);
-    const result = params.get("result");
-    document.getElementById("result").textContent = result || "No result provided.";
+    const status = params.get("status");
+    if (status === "pass" || status === "fail") {
+      document.body.classList.add(status);
+      document.getElementById("status").textContent = status === "pass" ? "✔ PASS" : "✘ FAIL";
+    }
+    document.getElementById("result").textContent = params.get("result") || "No result provided.";
   </script>
 </body>
 </html>
