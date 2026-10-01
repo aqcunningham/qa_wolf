@@ -1,9 +1,12 @@
 {
   "name": "qa_wolf_take_home",
   "version": "1.0.0",
-  "description": "",
+  "description": "Playwright script that validates the first 100 Hacker News /newest articles are sorted newest to oldest",
   "main": "index.js",
-  "scripts": {},
+  "scripts": {
+    "start": "node index.js",
+    "demo": "HEADED=1 SLOW_MO=1000 node index.js"
+  },
   "keywords": [],
   "author": "",
   "license": "ISC",

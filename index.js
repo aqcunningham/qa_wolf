@@ -1,90 +1,150 @@
-// EDIT THIS FILE TO COMPLETE ASSIGNMENT QUESTION 1
+// Hacker News /newest sort validator (QA Wolf take-home, Question 1).
+//
+// Collects EXACTLY the first 100 articles from https://news.ycombinator.com/newest
+// and validates that they are sorted from newest to oldest.
+//
+// Usage:
+//   node index.js                    # fast, headless
+//   HEADED=1 SLOW_MO=1000 node index.js  # visible browser, slowed down for demos
+//
+// Exit code: 0 = validated, 1 = validation failed or the run errored.
+
 const { chromium } = require("playwright");
-const assert = require("assert");
 const path = require("path");
+const readline = require("readline/promises");
 
+const START_URL = "https://news.ycombinator.com/newest";
+const TARGET_COUNT = 100;
+const HEADED = process.env.HEADED === "1";
+const SLOW_MO = Number(process.env.SLOW_MO || 0);
 
-// named function declaration, reusable
-async function sortHackerNewsArticles() {
-  const browser = await chromium.launch({ headless: false, slowMo: 2000 });
-  const context = await browser.newContext();
-  const page = await context.newPage();
+// HN's age `title` looks like "2025-01-15T18:07:38 1736964458" (ISO time, then Unix epoch).
+// Older markup only has the ISO part, so fall back to parsing that as UTC.
+function parseTimestamp(title) {
+  const [iso, epoch] = title.trim().split(/\s+/);
+  if (epoch && /^\d+$/.test(epoch)) return Number(epoch);
+  const ms = Date.parse(iso.endsWith("Z") ? iso : `${iso}Z`);
+  if (Number.isNaN(ms)) throw new Error(`Unparseable timestamp: "${title}"`);
+  return Math.floor(ms / 1000);
+}
 
-  // go to Hacker News
-  let currentPage = "https://news.ycombinator.com/newest";
-  await page.goto(currentPage);
+// Reads every article on the current page as { rank, title, timestamp }.
+async function readArticlesOnPage(page) {
+  const rows = page.locator("tr.athing");
+  const count = await rows.count();
+  const articles = [];
 
-  let articles = {};
-  let alltimestamps = []; 
-  let articleRanks = [];
-  let result = '';
+  for (let i = 0; i < count; i++) {
+    const row = rows.nth(i);
+    const rank = parseInt((await row.locator("span.rank").textContent()).replace(".", ""), 10);
+    const title = (await row.locator("span.titleline > a").first().textContent()).trim();
+    // The age lives in the row directly after the article row.
+    const ageTitle = await row.locator("xpath=following-sibling::tr[1]").locator("span.age").getAttribute("title");
 
-  try{
-    while (Object.keys(articles).length < 100) {
-      try {
-        await page.goto(currentPage);
-      } catch (e) {
-        console.error("An error occurred: page took too long to load (over 30sec)", e);
-        await browser.close();
-        break;
-      }
-      let ranks_raw = await page.locator("td.title span.rank").allTextContents();
-      let ranks = ranks_raw.map(rank => parseInt(rank.replace(".", "")));
-      articleRanks.push(...ranks);
-      let ages = page.locator("span.subline span.age");
-
-      for (let i = 0; i < 30; i++) {
-        if (Object.keys(articles).length === 100) {
-          break;
-        }
-        let timestamps = await ages.nth(i).getAttribute("title");
-        if (timestamps === null) {
-          console.log(`Error: timestamp for article at rank ${articleRanks[i]} is null. Skipping this article.`);
-          continue;
-        }
-        articles[ranks[i]] = timestamps;
-        // articleRanks.push(...ranks);
-        alltimestamps.push(timestamps);
-      }
-      console.log(`Number of articles collected: ${Object.keys(articles).length}`);
-
-      let moreButton = await page.locator("td.title a.morelink");
-      if (Object.keys(articles).length < 100) {
-        await moreButton.click();
-        currentPage = await page.url();
-      }
+    // A missing timestamp means we can't validate this article, and skipping it
+    // would mean we are no longer checking the *first* 100. Fail loudly instead.
+    if (ageTitle === null) {
+      throw new Error(`Article at rank ${rank} ("${title}") has no timestamp`);
     }
-  } catch (e) {
-    console.error("An error occurred:", e);
-  return;
+    articles.push({ rank, title, timestamp: parseTimestamp(ageTitle) });
+  }
+  return articles;
+}
+
+// Pages through /newest via the "More" link until TARGET_COUNT articles are collected.
+async function collectArticles(page) {
+  const articles = [];
+  await page.goto(START_URL);
+
+  while (articles.length < TARGET_COUNT) {
+    const pageArticles = await readArticlesOnPage(page);
+    if (pageArticles.length === 0) {
+      throw new Error(`No articles found on ${page.url()}`);
+    }
+    articles.push(...pageArticles.slice(0, TARGET_COUNT - articles.length));
+    console.log(`Collected ${articles.length}/${TARGET_COUNT} articles`);
+
+    if (articles.length < TARGET_COUNT) {
+      // "More" links to ?next=<id>, so new submissions don't shift the next page.
+      await Promise.all([page.waitForURL(/newest\?next=/), page.locator("a.morelink").click()]);
+    }
+  }
+  return articles;
+}
+
+function isoTime(ts) {
+  return new Date(ts * 1000).toISOString().replace(".000", "");
+}
+
+// Returns a { passed, message } describing whether the articles are newest-to-oldest.
+function validateArticles(articles) {
+  if (articles.length !== TARGET_COUNT) {
+    return { passed: false, message: `Expected exactly ${TARGET_COUNT} articles, but got ${articles.length}.` };
   }
 
-
-assert(Object.keys(articles).length === 100, `Expected 100 articles, but got ${Object.keys(articles).length}`);
-
-let check = true;
-for (let i = 0; i < Object.keys(articles).length - 1; i++) {
-  if (alltimestamps[i] < alltimestamps[i + 1]) {
-    check = false;
-    result = `Validation failed: articles at rank ${articleRanks[i]} and ${articleRanks[i + 1]} are out of order. Article ${articleRanks[i]} has timestamp ${alltimestamps[i]} and article ${articleRanks[i + 1]} has timestamp ${alltimestamps[i + 1]}.`;
-    break;
+  // Proves these are the *first* 100: ranks must be exactly 1..100 in order.
+  const badRank = articles.findIndex((a, i) => a.rank !== i + 1);
+  if (badRank !== -1) {
+    return {
+      passed: false,
+      message: `Expected rank ${badRank + 1} at position ${badRank + 1}, but found rank ${articles[badRank].rank}.`,
+    };
   }
-  else {
-  result = `Validated: exactly ${Object.keys(articles).length} articles retrieved and confirmed sorted from newest to oldest.`;
+
+  // Equal timestamps are allowed: two posts can land in the same second.
+  for (let i = 0; i < articles.length - 1; i++) {
+    const current = articles[i];
+    const next = articles[i + 1];
+    if (current.timestamp < next.timestamp) {
+      return {
+        passed: false,
+        message:
+          `Validation failed: rank ${current.rank} ("${current.title}", ${isoTime(current.timestamp)}) ` +
+          `is older than rank ${next.rank} ("${next.title}", ${isoTime(next.timestamp)}).`,
+      };
+    }
+  }
+
+  return {
+    passed: true,
+    message: `Validated: exactly ${articles.length} articles retrieved and confirmed sorted from newest to oldest.`,
+  };
+}
+
+// Shows the result on the local results page; in headed mode, waits for Enter before closing.
+async function showResult(page, { passed, message }) {
+  const resultPagePath = path.resolve(__dirname, "qa_result.html");
+  const params = new URLSearchParams({ result: message, status: passed ? "pass" : "fail" });
+  await page.goto(`file://${resultPagePath}?${params}`);
+
+  if (HEADED) {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    await rl.question("Press Enter to close...");
+    rl.close();
   }
 }
 
-const encoded = encodeURIComponent(result);
-const resultPagePath = path.resolve(__dirname, "qa_result.html");
-await page.goto(`file://${resultPagePath}?result=${encoded}`);
+async function sortHackerNewsArticles() {
+  const browser = await chromium.launch({ headless: !HEADED, slowMo: SLOW_MO });
+  try {
+    const page = await browser.newPage();
+    const articles = await collectArticles(page);
+    const result = validateArticles(articles);
 
-const readline = require("readline/promises");
-const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-await rl.question("Press Enter to close...");
-rl.close();
-await browser.close();
+    console.log(result.passed ? `PASS: ${result.message}` : `FAIL: ${result.message}`);
+    await showResult(page, result);
+    return result.passed;
+  } finally {
+    await browser.close();
+  }
 }
 
 (async () => {
-  await sortHackerNewsArticles();
+  try {
+    const passed = await sortHackerNewsArticles();
+    process.exitCode = passed ? 0 : 1;
+  } catch (e) {
+    console.error(`ERROR: ${e.message}`);
+    process.exitCode = 1;
+  }
 })();
